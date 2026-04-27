@@ -12,12 +12,24 @@ dependencies = [
     "uvicorn[standard]>=0.27",
     "pydantic>=2.6",
     "pyyaml>=6.0",
+    "numpy>=1.26",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=4.1",
+    "httpx>=0.27",
+    "websockets>=12.0",
+]
+embed-local = [
+    "sentence-transformers>=3.0",
+    "torch>=2.2",
+]
+nn = [
+    "torch>=2.2",
+]
+voyage = [
     "httpx>=0.27",
 ]
 

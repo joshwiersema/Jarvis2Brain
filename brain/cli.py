@@ -55,6 +55,8 @@ def _build_parser() -> argparse.ArgumentParser:
     psv.add_argument("--host", default="127.0.0.1")
     psv.add_argument("--port", type=int, default=8000)
 
+    sub.add_parser("reindex", help="Rebuild the embedding index from disk")
+
     return p
 
 
@@ -102,6 +104,21 @@ def main(
 
         app = create_app(vault_path)
         uvicorn.run(app, host=args.host, port=args.port)
+        return 0
+
+    if args.cmd == "reindex":
+        from brain.embed import get_embedder
+        from brain.index import MemoryIndex
+        from brain.memory import Memory
+
+        v = Vault(vault_path)
+        idx_path = vault_path / ".brain" / "index.npz"
+        embedder = get_embedder()
+        index = MemoryIndex(embedder, path=idx_path)
+        memory = Memory(v, index)
+        n = memory.reindex_from_vault()
+        index.save()
+        stdout.write(f"indexed {n} notes -> {idx_path}\n")
         return 0
 
     vault = Vault(vault_path)

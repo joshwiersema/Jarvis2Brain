@@ -10,8 +10,12 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
+from brain.embed import get_embedder, text_for_embedding
 from brain.graph_html import GRAPH_HTML
+from brain.index import IndexedDoc, MemoryIndex
+from brain.memory import Memory
 from brain.note import Note, now_utc
+from brain.rerank import get_reranker
 from brain.search import search as search_vault
 from brain.slug import InvalidSlugError, validate_slug
 from brain.vault import (
@@ -67,11 +71,41 @@ def _to_out(note: Note) -> NoteOut:
 
 
 def create_app(vault_path: Path) -> FastAPI:
-    app = FastAPI(title="brain", version="0.1.0")
+    app = FastAPI(title="brain", version="0.2.0")
     vault = Vault(vault_path)
+    embedder = get_embedder()
+    index = MemoryIndex(embedder, path=vault_path / ".brain" / "index.npz")
+    memory = Memory(vault, index, reranker=get_reranker())
+    # Bootstrap index from disk on startup (first-run builds it lazily).
+    try:
+        index = MemoryIndex.load(embedder, vault_path / ".brain" / "index.npz")
+        memory.index = index
+    except Exception:
+        pass
+    if not index.all_slugs():
+        memory.reindex_from_vault()
+        try:
+            index.save()
+        except Exception:
+            pass
+
+    def _reindex_one(note: Note) -> None:
+        memory.index.upsert(
+            IndexedDoc(
+                slug=note.slug,
+                text=text_for_embedding(note.title, note.body, note.tags),
+                kind=note.kind,
+                tags=list(note.tags),
+                importance=note.importance,
+                updated_ts=note.updated.timestamp(),
+            )
+        )
 
     def get_vault() -> Vault:
         return vault
+
+    def get_memory() -> Memory:
+        return memory
 
     @app.get("/notes", response_model=list[NoteSummaryOut])
     def list_notes(
@@ -101,6 +135,7 @@ def create_app(vault_path: Path) -> FastAPI:
             v.create(note)
         except NoteExistsError as e:
             raise HTTPException(status_code=409, detail=str(e)) from e
+        _reindex_one(note)
         return _to_out(note)
 
     @app.get("/notes/{slug}", response_model=NoteOut)
@@ -122,6 +157,7 @@ def create_app(vault_path: Path) -> FastAPI:
             raise HTTPException(status_code=404, detail=str(e)) from e
         except InvalidSlugError as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
+        _reindex_one(note)
         return _to_out(note)
 
     @app.delete("/notes/{slug}", status_code=204)
@@ -132,17 +168,49 @@ def create_app(vault_path: Path) -> FastAPI:
             raise HTTPException(status_code=404, detail=str(e)) from e
         except InvalidSlugError as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
+        memory.index.delete(slug)
 
     @app.get("/search", response_model=list[NoteSummaryOut])
     def search_endpoint(
         q: str = Query(default=""),
         tag: Optional[str] = None,
+        mode: str = Query(default="substring"),
+        kind: Optional[str] = None,
+        rerank: bool = False,
         v: Vault = Depends(get_vault),
     ) -> list[NoteSummaryOut]:
-        return [
-            NoteSummaryOut(slug=s.slug, title=s.title, tags=s.tags, updated=s.updated)
-            for s in search_vault(v, q, tag=tag)
-        ]
+        if mode == "substring":
+            results = search_vault(v, q, tag=tag)
+            if kind:
+                results = [s for s in results if s.kind == kind]
+            return [
+                NoteSummaryOut(slug=s.slug, title=s.title, tags=s.tags, updated=s.updated)
+                for s in results
+            ]
+        # mode in {semantic, hybrid}
+        hits = memory.archival(q, kind=kind) if mode == "hybrid" else memory.archival(q, kind=kind)
+        if mode == "semantic":
+            search_results = memory.index.search(q, mode="semantic", kind=kind)
+            slugs = [r.slug for r in search_results]
+        else:
+            slugs = [h.slug for h in hits]
+        out: list[NoteSummaryOut] = []
+        for slug in slugs:
+            try:
+                note = v.read(slug)
+            except NoteNotFoundError:
+                continue
+            if tag and tag not in note.tags:
+                continue
+            out.append(
+                NoteSummaryOut(
+                    slug=note.slug,
+                    title=note.title,
+                    tags=list(note.tags),
+                    updated=note.updated,
+                )
+            )
+        return out
 
     @app.get("/graph.json")
     def graph_json(v: Vault = Depends(get_vault)) -> dict:
@@ -155,6 +223,15 @@ def create_app(vault_path: Path) -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     def root() -> str:
         return GRAPH_HTML
+
+    @app.post("/reindex")
+    def reindex_endpoint(m: Memory = Depends(get_memory)) -> dict:
+        n = m.reindex_from_vault()
+        try:
+            m.index.save()
+        except Exception:
+            pass
+        return {"indexed": n}
 
     @app.get("/notes/{slug}/links", response_model=LinksOut)
     def links_endpoint(slug: str, v: Vault = Depends(get_vault)) -> LinksOut:
