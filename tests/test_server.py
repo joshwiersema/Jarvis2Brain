@@ -128,7 +128,8 @@ class TestGraphEndpoints:
         assert r.status_code == 200
         assert "text/html" in r.headers["content-type"]
         assert "vis-network" in r.text
-        assert "/graph.json" in r.text
+        # v0.2: graph fetches data over /graph/ws (initial snapshot) instead.
+        assert "/graph/ws" in r.text
 
     def test_root_serves_graph(self, client: TestClient) -> None:
         r = client.get("/")

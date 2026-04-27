@@ -6,11 +6,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+import asyncio
+
+from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from brain.embed import get_embedder, text_for_embedding
+from brain.events import Event, EventBus
 from brain.graph_html import GRAPH_HTML
 from brain.index import IndexedDoc, MemoryIndex
 from brain.memory import Memory
@@ -76,6 +79,20 @@ def create_app(vault_path: Path) -> FastAPI:
     embedder = get_embedder()
     index = MemoryIndex(embedder, path=vault_path / ".brain" / "index.npz")
     memory = Memory(vault, index, reranker=get_reranker())
+    bus = EventBus()
+    app.state.bus = bus
+
+    def _node_payload(note: Note) -> dict:
+        return {
+            "id": note.slug,
+            "title": note.title,
+            "tags": list(note.tags),
+            "kind": note.kind,
+            "importance": note.importance,
+            "preview": note.body[:240],
+            "ghost": False,
+            "xy": list(note.xy) if note.xy else None,
+        }
     # Bootstrap index from disk on startup (first-run builds it lazily).
     try:
         index = MemoryIndex.load(embedder, vault_path / ".brain" / "index.npz")
@@ -136,6 +153,7 @@ def create_app(vault_path: Path) -> FastAPI:
         except NoteExistsError as e:
             raise HTTPException(status_code=409, detail=str(e)) from e
         _reindex_one(note)
+        bus.publish(Event(type="node.created", payload=_node_payload(note)))
         return _to_out(note)
 
     @app.get("/notes/{slug}", response_model=NoteOut)
@@ -158,6 +176,7 @@ def create_app(vault_path: Path) -> FastAPI:
         except InvalidSlugError as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
         _reindex_one(note)
+        bus.publish(Event(type="node.updated", payload=_node_payload(note)))
         return _to_out(note)
 
     @app.delete("/notes/{slug}", status_code=204)
@@ -169,6 +188,7 @@ def create_app(vault_path: Path) -> FastAPI:
         except InvalidSlugError as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
         memory.index.delete(slug)
+        bus.publish(Event(type="node.deleted", payload={"id": slug}))
 
     @app.get("/search", response_model=list[NoteSummaryOut])
     def search_endpoint(
@@ -239,6 +259,39 @@ def create_app(vault_path: Path) -> FastAPI:
 
         trainer = BrainTrainer(memory)
         summaries = trainer.train_full(epochs=epochs)
+        # Push fresh xy positions to all connected clients.
+        slugs, _ = memory.index.vectors_matrix()
+        moved = []
+        for slug in slugs:
+            try:
+                note = vault.read(slug)
+            except NoteNotFoundError:
+                continue
+            if note.xy is not None:
+                moved.append({"id": slug, "xy": list(note.xy)})
+        bus.publish(Event(type="training.epoch", payload={
+            "summaries": [
+                {
+                    "avg_recon": s.avg_recon,
+                    "avg_link": s.avg_link,
+                    "n_pairs": s.n_pairs,
+                    "n_docs": s.n_docs,
+                }
+                for s in summaries
+            ],
+            "positions": moved,
+        }))
+        # Surface new edge proposals.
+        proposals_path = vault_path / ".brain" / "edge_proposals.jsonl"
+        if proposals_path.exists():
+            import json as _json
+            props = []
+            for line in proposals_path.read_text(encoding="utf-8").splitlines():
+                try:
+                    props.append(_json.loads(line))
+                except Exception:
+                    continue
+            bus.publish(Event(type="proposals.updated", payload={"proposals": props}))
         return {
             "epochs": [
                 {
@@ -250,6 +303,21 @@ def create_app(vault_path: Path) -> FastAPI:
                 for s in summaries
             ]
         }
+
+    @app.websocket("/graph/ws")
+    async def graph_ws(ws: WebSocket) -> None:
+        await ws.accept()
+        q = bus.subscribe()
+        try:
+            # Send initial graph snapshot so clients pick up cold.
+            await ws.send_json({"type": "graph.snapshot", "payload": vault.graph()})
+            while True:
+                event: Event = await q.get()
+                await ws.send_json(event.to_dict())
+        except WebSocketDisconnect:
+            pass
+        finally:
+            bus.unsubscribe(q)
 
     @app.get("/training_history")
     def training_history_endpoint(tail: int = 200) -> dict:
