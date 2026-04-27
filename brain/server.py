@@ -1,0 +1,170 @@
+"""FastAPI HTTP server. Contract is the surface Jarvis 2.0's vault connector hits."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field
+
+from brain.graph_html import GRAPH_HTML
+from brain.note import Note, now_utc
+from brain.search import search as search_vault
+from brain.slug import InvalidSlugError, validate_slug
+from brain.vault import (
+    NoteExistsError,
+    NoteNotFoundError,
+    Vault,
+)
+
+
+class NoteCreate(BaseModel):
+    slug: str
+    title: str
+    body: str = ""
+    tags: list[str] = Field(default_factory=list)
+
+
+class NoteUpdate(BaseModel):
+    title: Optional[str] = None
+    body: Optional[str] = None
+    tags: Optional[list[str]] = None
+
+
+class NoteOut(BaseModel):
+    slug: str
+    title: str
+    created: datetime
+    updated: datetime
+    tags: list[str]
+    body: str
+
+
+class NoteSummaryOut(BaseModel):
+    slug: str
+    title: str
+    tags: list[str]
+    updated: datetime
+
+
+class LinksOut(BaseModel):
+    outgoing: list[str]
+    incoming: list[str]
+
+
+def _to_out(note: Note) -> NoteOut:
+    return NoteOut(
+        slug=note.slug,
+        title=note.title,
+        created=note.created,
+        updated=note.updated,
+        tags=list(note.tags),
+        body=note.body,
+    )
+
+
+def create_app(vault_path: Path) -> FastAPI:
+    app = FastAPI(title="brain", version="0.1.0")
+    vault = Vault(vault_path)
+
+    def get_vault() -> Vault:
+        return vault
+
+    @app.get("/notes", response_model=list[NoteSummaryOut])
+    def list_notes(
+        tag: Optional[str] = None, v: Vault = Depends(get_vault)
+    ) -> list[NoteSummaryOut]:
+        return [
+            NoteSummaryOut(slug=s.slug, title=s.title, tags=s.tags, updated=s.updated)
+            for s in v.list(tag=tag)
+        ]
+
+    @app.post("/notes", response_model=NoteOut, status_code=201)
+    def create_note(payload: NoteCreate, v: Vault = Depends(get_vault)) -> NoteOut:
+        try:
+            validate_slug(payload.slug)
+        except InvalidSlugError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        ts = now_utc()
+        note = Note(
+            slug=payload.slug,
+            title=payload.title,
+            created=ts,
+            updated=ts,
+            tags=list(payload.tags),
+            body=payload.body,
+        )
+        try:
+            v.create(note)
+        except NoteExistsError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
+        return _to_out(note)
+
+    @app.get("/notes/{slug}", response_model=NoteOut)
+    def read_note(slug: str, v: Vault = Depends(get_vault)) -> NoteOut:
+        try:
+            return _to_out(v.read(slug))
+        except NoteNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        except InvalidSlugError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+
+    @app.put("/notes/{slug}", response_model=NoteOut)
+    def update_note(
+        slug: str, payload: NoteUpdate, v: Vault = Depends(get_vault)
+    ) -> NoteOut:
+        try:
+            note = v.update(slug, title=payload.title, body=payload.body, tags=payload.tags)
+        except NoteNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        except InvalidSlugError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        return _to_out(note)
+
+    @app.delete("/notes/{slug}", status_code=204)
+    def delete_note(slug: str, v: Vault = Depends(get_vault)) -> None:
+        try:
+            v.delete(slug)
+        except NoteNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        except InvalidSlugError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+
+    @app.get("/search", response_model=list[NoteSummaryOut])
+    def search_endpoint(
+        q: str = Query(default=""),
+        tag: Optional[str] = None,
+        v: Vault = Depends(get_vault),
+    ) -> list[NoteSummaryOut]:
+        return [
+            NoteSummaryOut(slug=s.slug, title=s.title, tags=s.tags, updated=s.updated)
+            for s in search_vault(v, q, tag=tag)
+        ]
+
+    @app.get("/graph.json")
+    def graph_json(v: Vault = Depends(get_vault)) -> dict:
+        return v.graph()
+
+    @app.get("/graph", response_class=HTMLResponse)
+    def graph_page() -> str:
+        return GRAPH_HTML
+
+    @app.get("/", response_class=HTMLResponse)
+    def root() -> str:
+        return GRAPH_HTML
+
+    @app.get("/notes/{slug}/links", response_model=LinksOut)
+    def links_endpoint(slug: str, v: Vault = Depends(get_vault)) -> LinksOut:
+        try:
+            return LinksOut(
+                outgoing=v.outgoing_links(slug), incoming=v.incoming_links(slug)
+            )
+        except NoteNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        except InvalidSlugError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+
+    return app
