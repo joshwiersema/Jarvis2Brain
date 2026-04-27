@@ -114,4 +114,5 @@ class TestVaultResolution:
             stderr=io.StringIO(),
         )
         assert rc == 0
-        assert (target / "z.md").exists()
+        # v0.2: new notes land in episodic/inbox/ by default.
+        assert (target / "episodic" / "inbox" / "z.md").exists()

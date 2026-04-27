@@ -11,7 +11,7 @@ from brain.vault import Vault
 def search(vault: Vault, query: str, *, tag: Optional[str] = None) -> list[NoteSummary]:
     q = query.lower()
     out: list[NoteSummary] = []
-    for path in sorted(vault.path.glob("*.md")):
+    for path in sorted(vault._walk_md()):
         slug = path.stem
         try:
             note = parse_note(slug, path.read_text(encoding="utf-8"))

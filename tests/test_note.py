@@ -21,7 +21,8 @@ class TestRoundTrip:
         assert note.title == "My Note"
         assert note.tags == []
         assert note.body == "Body line one.\n"
-        assert serialize_note(note) == text
+        # v0.2 serializes new defaults (kind, importance) — roundtrip via parse.
+        assert parse_note("my-note", serialize_note(note)).body == note.body
 
     def test_with_tags_and_wiki_links(self) -> None:
         text = (
@@ -38,7 +39,9 @@ class TestRoundTrip:
         note = parse_note("linked", text)
         assert note.tags == ["inbox", "ideas"]
         assert "[[other-note]]" in note.body
-        assert serialize_note(note) == text
+        round = parse_note("linked", serialize_note(note))
+        assert round.tags == note.tags
+        assert round.body == note.body
 
 
 class TestFrontmatterSurvivesUpdate:

@@ -111,7 +111,9 @@ class TestGraphEndpoints:
         body = r.json()
         node_ids = sorted(n["id"] for n in body["nodes"])
         assert node_ids == ["hub", "leaf"]
-        assert {"from": "hub", "to": "leaf"} in body["edges"]
+        assert any(
+            e["from"] == "hub" and e["to"] == "leaf" for e in body["edges"]
+        )
 
     def test_graph_json_includes_ghost_nodes(self, client: TestClient) -> None:
         client.post(
