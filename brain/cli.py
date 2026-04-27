@@ -57,6 +57,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("reindex", help="Rebuild the embedding index from disk")
 
+    pt = sub.add_parser("train", help="Train the brain NN on the vault")
+    pt.add_argument("--epochs", type=int, default=3)
+
     return p
 
 
@@ -119,6 +122,29 @@ def main(
         n = memory.reindex_from_vault()
         index.save()
         stdout.write(f"indexed {n} notes -> {idx_path}\n")
+        return 0
+
+    if args.cmd == "train":
+        from brain.embed import get_embedder
+        from brain.index import MemoryIndex
+        from brain.loops.train_brain import BrainTrainer
+        from brain.memory import Memory
+
+        v = Vault(vault_path)
+        idx_path = vault_path / ".brain" / "index.npz"
+        embedder = get_embedder()
+        index = MemoryIndex.load(embedder, idx_path)
+        memory = Memory(v, index)
+        if not index.all_slugs():
+            memory.reindex_from_vault()
+            index.save()
+        trainer = BrainTrainer(memory)
+        summaries = trainer.train_full(epochs=args.epochs)
+        for i, s in enumerate(summaries):
+            stdout.write(
+                f"epoch {i}: recon={s.avg_recon:.4f} link={s.avg_link:.4f} "
+                f"docs={s.n_docs} pairs={s.n_pairs}\n"
+            )
         return 0
 
     vault = Vault(vault_path)

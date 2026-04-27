@@ -233,6 +233,43 @@ def create_app(vault_path: Path) -> FastAPI:
             pass
         return {"indexed": n}
 
+    @app.post("/train")
+    def train_endpoint(epochs: int = 1) -> dict:
+        from brain.loops.train_brain import BrainTrainer
+
+        trainer = BrainTrainer(memory)
+        summaries = trainer.train_full(epochs=epochs)
+        return {
+            "epochs": [
+                {
+                    "avg_recon": s.avg_recon,
+                    "avg_link": s.avg_link,
+                    "n_pairs": s.n_pairs,
+                    "n_docs": s.n_docs,
+                }
+                for s in summaries
+            ]
+        }
+
+    @app.get("/training_history")
+    def training_history_endpoint(tail: int = 200) -> dict:
+        from brain.nn import read_history
+
+        return {"history": read_history(vault_path / ".brain" / "training_history.jsonl", tail=tail)}
+
+    @app.get("/edge_proposals")
+    def edge_proposals_endpoint() -> dict:
+        path = vault_path / ".brain" / "edge_proposals.jsonl"
+        if not path.exists():
+            return {"proposals": []}
+        out = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                out.append(__import__("json").loads(line))
+            except Exception:
+                continue
+        return {"proposals": out}
+
     @app.get("/notes/{slug}/links", response_model=LinksOut)
     def links_endpoint(slug: str, v: Vault = Depends(get_vault)) -> LinksOut:
         try:
