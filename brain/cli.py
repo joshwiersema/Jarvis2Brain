@@ -63,6 +63,10 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("mcp", help="Run the MCP stdio server")
     sub.add_parser("skills", help="List registered skills")
 
+    pdm = sub.add_parser("daemon", help="Run sleep/cron/event loops")
+    pdm.add_argument("action", choices=["start", "cycle", "status"])
+    pdm.add_argument("--sleep-interval", type=float, default=1800.0)
+
     return p
 
 
@@ -131,6 +135,29 @@ def main(
         from brain.mcp import run_stdio
 
         run_stdio()
+        return 0
+
+    if args.cmd == "daemon":
+        from brain.daemon import BrainDaemon, DaemonConfig
+
+        d = BrainDaemon(vault_path, config=DaemonConfig(sleep_interval_s=args.sleep_interval))
+        if args.action == "cycle":
+            out = d.run_sleep_cycle()
+            stdout.write(json.dumps(out, indent=2) + "\n")
+            return 0
+        if args.action == "status":
+            stdout.write(json.dumps({"running": d.status.running}, indent=2) + "\n")
+            return 0
+        # start (foreground).
+        d.start()
+        try:
+            stdout.write(f"daemon started: threads={d.status.threads}\n")
+            stdout.flush()
+            import time as _time
+            while True:
+                _time.sleep(60)
+        except KeyboardInterrupt:
+            d.stop()
         return 0
 
     if args.cmd == "skills":
