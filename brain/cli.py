@@ -60,6 +60,9 @@ def _build_parser() -> argparse.ArgumentParser:
     pt = sub.add_parser("train", help="Train the brain NN on the vault")
     pt.add_argument("--epochs", type=int, default=3)
 
+    sub.add_parser("mcp", help="Run the MCP stdio server")
+    sub.add_parser("skills", help="List registered skills")
+
     return p
 
 
@@ -122,6 +125,21 @@ def main(
         n = memory.reindex_from_vault()
         index.save()
         stdout.write(f"indexed {n} notes -> {idx_path}\n")
+        return 0
+
+    if args.cmd == "mcp":
+        from brain.mcp import run_stdio
+
+        run_stdio()
+        return 0
+
+    if args.cmd == "skills":
+        from brain.skill import discover_builtins, discover_user, get_registry
+
+        discover_builtins()
+        discover_user(vault_path)
+        for s in get_registry().list_skills():
+            stdout.write(f"{s.name}\t{s.description}\n")
         return 0
 
     if args.cmd == "train":

@@ -244,6 +244,36 @@ def create_app(vault_path: Path) -> FastAPI:
     def root() -> str:
         return GRAPH_HTML
 
+    # Skill registry — discover built-ins on startup, expose over HTTP.
+    from brain.skill import discover_builtins, discover_user, get_registry
+
+    discover_builtins()
+    discover_user(vault_path)
+
+    @app.get("/skills")
+    def list_skills_endpoint() -> dict:
+        return {
+            "skills": [
+                {
+                    "name": s.name,
+                    "description": s.description,
+                    "schema": s.schema,
+                    "trusted": s.trusted,
+                }
+                for s in get_registry().list_skills()
+            ]
+        }
+
+    @app.post("/skills/{name}")
+    def invoke_skill_endpoint(name: str, payload: dict = None) -> dict:
+        try:
+            result = get_registry().invoke(name, **(payload or {}))
+        except KeyError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        except TypeError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        return {"result": result}
+
     @app.post("/reindex")
     def reindex_endpoint(m: Memory = Depends(get_memory)) -> dict:
         n = m.reindex_from_vault()
