@@ -103,10 +103,16 @@ class BrainDaemon:
 
     def run_sleep_cycle(self) -> dict:
         """Public entrypoint so tests + CLI can invoke a single cycle."""
+        from brain.loops.constitution import ensure_constitution
+        from brain.loops.skill_synthesis import propose_skills, write_proposals
+
+        ensure_constitution(self.vault)
         n = self.memory.reindex_from_vault()
         self.memory.index.save()
         summaries = self.trainer.train_full(epochs=self.config.train_epochs)
         classifications = auto_classify_inbox(self.memory)
+        skill_proposals = propose_skills(self.memory)
+        n_proposals = write_proposals(self.memory, skill_proposals)
         return {
             "indexed": n,
             "epochs": [s.avg_recon for s in summaries],
@@ -114,6 +120,7 @@ class BrainDaemon:
                 {"slug": c.slug, "kind": c.chosen_kind, "confidence": c.confidence}
                 for c in classifications
             ],
+            "skill_proposals": n_proposals,
         }
 
     # ----- cron loop -----

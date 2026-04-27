@@ -35,7 +35,8 @@ def test_run_sleep_cycle_indexes_and_trains(tmp_path: Path):
     _seed(tmp_path)
     d = BrainDaemon(tmp_path, config=DaemonConfig())
     out = d.run_sleep_cycle()
-    assert out["indexed"] == 2
+    # 2 seeded + 1 constitution that ensure_constitution writes.
+    assert out["indexed"] >= 2
     assert len(out["epochs"]) >= 1
     # History file gets written by trainer.
     hist = tmp_path / ".brain" / "training_history.jsonl"

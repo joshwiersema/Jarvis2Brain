@@ -68,6 +68,14 @@ def _build_parser() -> argparse.ArgumentParser:
     pdm.add_argument("action", choices=["start", "cycle", "status"])
     pdm.add_argument("--sleep-interval", type=float, default=1800.0)
 
+    ph = sub.add_parser("history", help="Show git history of a note")
+    ph.add_argument("slug")
+    ph.add_argument("--limit", type=int, default=20)
+
+    pr = sub.add_parser("rollback", help="Roll back a note to a prior commit")
+    pr.add_argument("slug")
+    pr.add_argument("commit")
+
     return p
 
 
@@ -137,6 +145,23 @@ def main(
 
         run_stdio()
         return 0
+
+    if args.cmd == "history":
+        from brain.git_versioning import history
+
+        for entry in history(vault_path, args.slug, limit=args.limit):
+            stdout.write(f"{entry['commit'][:8]}  {entry['date']}  {entry['subject']}\n")
+        return 0
+
+    if args.cmd == "rollback":
+        from brain.git_versioning import rollback
+
+        ok = rollback(vault_path, args.slug, args.commit)
+        if ok:
+            stdout.write(f"rolled back {args.slug} to {args.commit[:8]}\n")
+            return 0
+        stderr.write("rollback failed (no git repo or path not found)\n")
+        return 6
 
     if args.cmd == "audit-verify":
         from brain.audit import verify

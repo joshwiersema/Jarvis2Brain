@@ -150,9 +150,18 @@ def parse_note(slug: str, text: str) -> Note:
         raise NoteParseError(str(e)) from e
 
 
+def _yaml_str(value: str) -> str:
+    """Return a single-line YAML scalar for the value (quoted if needed)."""
+    rendered = yaml.safe_dump(value, default_flow_style=True, allow_unicode=True).strip()
+    # safe_dump may append a trailing newline-equivalent or wrap in [].
+    if rendered.endswith("\n..."):
+        rendered = rendered[:-4]
+    return rendered
+
+
 def serialize_note(note: Note) -> str:
     lines = [
-        f"title: {note.title}",
+        f"title: {_yaml_str(note.title)}",
         f"created: {note.created.isoformat()}",
         f"updated: {note.updated.isoformat()}",
     ]
