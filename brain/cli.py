@@ -62,6 +62,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("mcp", help="Run the MCP stdio server")
     sub.add_parser("skills", help="List registered skills")
+    sub.add_parser("audit-verify", help="Verify the audit-log hash chain")
 
     pdm = sub.add_parser("daemon", help="Run sleep/cron/event loops")
     pdm.add_argument("action", choices=["start", "cycle", "status"])
@@ -136,6 +137,16 @@ def main(
 
         run_stdio()
         return 0
+
+    if args.cmd == "audit-verify":
+        from brain.audit import verify
+
+        ok, idx, msg = verify(vault_path / ".brain" / "audit.jsonl")
+        if ok:
+            stdout.write("audit chain ok\n")
+            return 0
+        stderr.write(f"audit chain BROKEN at line {idx}: {msg}\n")
+        return 5
 
     if args.cmd == "daemon":
         from brain.daemon import BrainDaemon, DaemonConfig
